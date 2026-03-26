@@ -1,0 +1,197 @@
+---
+title: "Exercise-08"
+format: html
+editor: visual
+---
+
+```{r}
+# Download the file and do a quick summary
+f <- "https://raw.githubusercontent.com/difiore/ada-datasets/main/Street_et_al_2017.csv"
+library(readr)
+d <- read_csv(f, col_names = TRUE)
+library(skimr)
+skim(d)
+```
+
+Plot ECV as a function of social group size (Group_size), longevity (Longevity), juvenile period length (Weaning), and reproductive lifespan (Repro_lifespan)
+
+```{r}
+library(ggplot2)
+# ECV vs. Social Group Size
+ggplot(d, aes(x = Group_size, y = ECV))+
+  geom_smooth(formula = y ~ x, method = "lm")+
+  labs(title = "Brain Size vs Social Group Size")
+
+# ECV vs. Longevity 
+ggplot(d, aes(x = Longevity, y = ECV))+
+  geom_smooth(formula = y ~ x, method = "lm")+
+  labs(title = "Longevity vs Social Group Size")
+
+# ECV vs. Weaning
+ggplot(d, aes(x = Weaning, y = ECV))+
+  geom_smooth(formula = y ~ x, method = "lm")+
+  labs(title = "Juvenile Period Length vs Social Group Size")
+
+# ECV vs Reproductive Lifespan
+ggplot(d, aes(x = Repro_lifespan, y = ECV))+
+  geom_smooth(formula = y ~ x, method = "lm")+
+  labs(title = "Reproductive Lifespan vs Social Group Size")
+
+```
+
+Calculating linear regression coefficients
+
+```{r}
+library(tidyr)
+d <- d |> drop_na(ECV)
+d <- d |> drop_na(Group_size)
+
+# --- Calculate by hand ---
+groupsize <- d$Group_size
+ecv <- d$ECV
+
+B1 <- sum((groupsize - mean(groupsize))* (ecv - mean(ecv))/sum(groupsize - mean(groupsize))^2)
+
+B0 <- mean(ecv) - B1*mean(groupsize)
+
+# --- Confirm with lm() function ---
+model <- lm(ECV ~ Group_size, data = d)
+summary(model)
+```
+
+Repeat the analysis
+
+```{r}
+# Calculate seperate regressions by group 
+library(purrr)
+models_cata <- lm(ECV ~ Group_size,
+                  data = subset(d, Taxonomic_group == "Catarrhini"))
+
+models_platy <- lm(ECV ~ Group_size,
+                   data = subset(d, Taxonomic_group == "Platyrrhini"))
+
+models_streps <- lm(ECV ~ Group_size,
+                   data = subset(d, Taxonomic_group == "Strepsirhini"))
+
+# confirm the coefficients
+coef(models_cata)
+coef(models_platy)
+coef(models_streps)
+
+# Fit one combined model with an interaction to double check
+interaction_model <- lm(ECV ~ Group_size * Taxonomic_group, data = d)
+interaction_model
+
+# Plot the models to visualize it and tirple check
+ggplot(d, aes(x = Group_size, y = ECV, color = Taxonomic_group)) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "ECV vs Group Size by Primate Radiation")
+```
+
+Answer: Yes, the regression coefficients differ among groups. To determine that, I calculated the individual coefficients of each group and visualized it to help me read the difference better.
+
+Calculate the standard error for the slop coef, 95% CI, P-value by hand
+
+```{r}
+# The easy way to know
+summary(model)
+
+# Calculate by hand
+n <- length(groupsize)
+
+#slope
+B1 <- sum((groupsize - mean(groupsize))* (ecv - mean(ecv))) / sum((groupsize - mean(groupsize))^2)
+
+B0 <- mean(ecv) - B1*mean(groupsize)
+
+#Residuals
+residuals <- ecv - (B0 + B1*groupsize)
+
+#Residual variance
+sigma2 <- sum(residuals^2) / (n - 2)
+
+# SE of slope
+SE_B1 <- sqrt(sigma2 / sum(groupsize - mean(groupsize))^2)
+
+# 95% CI
+t_value <- qt(0.975, df = n - 2)
+CI_lower <- B1 - t_value * SE_B1
+CI_upper <- B1 + t_value * SE_B1
+
+#P-value for slope
+t_stat <- B1 / SE_B1
+p_value <- 2 * (1 - pt(abs(t_stat), df = n -2))
+
+summary(model)$coefficients
+confint(model)
+```
+
+Permutation approach with 1000 permutations for the slope coefficient
+
+```{r}
+set.seed(123)
+n_perm <- 1000
+x <- d$Group_size
+y <- d$ECV
+
+#Original Slope
+B1_obs <- coef(lm(y~x))[2]
+
+B1_perm <- numeric(n_perm)
+
+for(i in 1:n_perm) {
+  y_perm <- sample(y) 
+  B1_perm[i] <- coef(lm(y_perm ~ x))[2]
+}
+
+hist(B1_perm)
+
+#calculate p-value: theory-based
+B1_mean <- mean(B1_perm)
+B1_sd   <- sd(B1_perm)
+
+# z-score of observed slope
+z <- (B1_obs - B1_mean) / B1_sd
+
+# Two-sided p-value
+p_theory <- 2 * (1 - pnorm(abs(z)))
+p_theory
+```
+
+Bootstrapping to generate a 95% CI
+
+```{r}
+set.seed(123)
+n_boot <- 1000
+B1_boot <- numeric(n_boot)
+
+x <- d$Group_size
+y <- d$ECV
+n <- nrow(d)
+
+for(i in 1:n_boot){
+  indices <- sample(1:n, size = n, replace = TRUE)
+  x_boot <- x[indices]
+  y_boot <- y[indices]
+  
+  model_boot <- lm(y_boot ~ x_boot)
+  B1_boot[i] <- coef(model_boot)[2]
+}
+
+# Quantile-based 95% CI
+CI_quantile <- quantile(B1_boot, probs = c(0.025, 0.975))
+CI_quantile
+
+# Theory-based 95% CI
+B1_mean <- mean(B1_boot)
+B1_sd <- sd(B1_boot)
+CI_theory <- c(B1_mean - 1.96 * B1_sd, B1_mean + 1.96 * B1_sd)
+CI_theory
+
+# check if the slop is different from zero
+B1_obs <- coef(lm(y ~ x))[2]
+CI_quantile
+CI_theory
+```
+
+Answer: Yes, both CIs suggest that my slop coefficient is different from zero.
